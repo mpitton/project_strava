@@ -3,6 +3,8 @@
 <head>
     <title>Athlete Activities Chart</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -14,8 +16,8 @@
             margin: 0;
         }
         .chart-container {
-            width: 80%;
-            max-width: 900px;
+            width: 90%;
+            max-width: 1200px;
             background-color: #fff;
             padding: 20px;
             border-radius: 8px;
@@ -124,10 +126,72 @@
         .location-table td:first-child {
             font-weight: 500;
             color: #333;
+            max-width: 300px;
         }
-        .location-table td:last-child {
+        .location-table td:nth-child(2) {
             font-weight: 600;
             color: #fc4c02;
+            width: 80px;
+        }
+        .location-map-cell {
+            width: 200px;
+            height: 120px;
+            padding: 0 !important;
+        }
+        .location-map-cell > div {
+            width: 100%;
+            height: 100%;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        /* Modal styles for interactive map */
+        .map-modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.35);
+            justify-content: center;
+            align-items: center;
+        }
+        .map-modal-content {
+            background: #fff;
+            border-radius: 12px;
+            padding: 0;
+            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 90vw;
+            max-height: 85vh;
+            position: relative;
+            overflow: hidden;
+        }
+        .map-modal-close {
+            position: absolute;
+            right: 18px;
+            top: 8px;
+            font-size: 30px;
+            color: #888;
+            cursor: pointer;
+            z-index: 10;
+        }
+        .map-modal-close:hover {
+            color: #fc4c02;
+        }
+        #modalMapHeader {
+            font-size: 18px;
+            padding: 18px 20px 0 20px;
+            font-weight: 600;
+            color: #333;
+        }
+        #modalMap {
+            width: 100%;
+            height: 60vh;
+            margin: 0 0 18px 0;
+            border-radius: 0 0 12px 12px;
         }
     </style>
 </head>
@@ -149,6 +213,15 @@
                 <path d="M12 2L2 7l10 5 10-5-10-5Zm0 7L2 4v13l10 5 10-5V4l-10 5Z" fill="#e0e0e0"/>
             </svg>
             <div style="margin-top:12px; font-size:18px; color:#444;">Coming soon</div>
+        </div>
+    </div>
+
+    <!-- Interactive Map Modal -->
+    <div id="mapModal" class="map-modal" aria-hidden="true">
+        <div class="map-modal-content">
+            <span class="map-modal-close" aria-label="Close">&times;</span>
+            <div id="modalMapHeader"></div>
+            <div id="modalMap"></div>
         </div>
     </div>
 
@@ -611,28 +684,221 @@
                 window.heartRateChart = heartRateChart;
                 buildLegendToggles('heartRateControls', heartRateChart);
 
-                // Location table - count activities by timezone
-                const locationCounts = {};
+                // Location table - count activities by timezone and group polylines
+                // Separate VirtualRide activities into "Virtual" category
+                const locationData = {};
                 sortedActivities.forEach(a => {
-                    const formattedLocation = formatTimezone(a.timezone);
-                    locationCounts[formattedLocation] = (locationCounts[formattedLocation] || 0) + 1;
+                    // Check if it's a VirtualRide
+                    if (a.sport_type === 'VirtualRide') {
+                        const location = 'Virtual';
+                        if (!locationData[location]) {
+                            locationData[location] = {
+                                count: 0,
+                                polylines: []
+                            };
+                        }
+                        locationData[location].count++;
+                        // Virtual rides typically don't have real polylines, but include if they do
+                        if (a.map && a.map.summary_polyline) {
+                            locationData[location].polylines.push(a.map.summary_polyline);
+                        }
+                    } else {
+                        const formattedLocation = formatTimezone(a.timezone);
+                        if (!locationData[formattedLocation]) {
+                            locationData[formattedLocation] = {
+                                count: 0,
+                                polylines: []
+                            };
+                        }
+                        locationData[formattedLocation].count++;
+                        if (a.map && a.map.summary_polyline) {
+                            locationData[formattedLocation].polylines.push(a.map.summary_polyline);
+                        }
+                    }
                 });
                 
                 // Sort by count (descending)
-                const sortedLocations = Object.entries(locationCounts)
-                    .sort((a, b) => b[1] - a[1]);
+                const sortedLocations = Object.entries(locationData)
+                    .sort((a, b) => b[1].count - a[1].count);
                 
-                // Generate table HTML
+                // Generate table HTML with map column
                 const locationContainer = document.getElementById('locationChart');
                 let tableHTML = '<div class="location-table-title">Ride locations</div>';
                 tableHTML += '<table class="location-table">';
-                tableHTML += '<thead><tr><th>Location</th><th>Activities</th></tr></thead>';
+                tableHTML += '<thead><tr><th>Location</th><th>Activities</th><th>Map</th></tr></thead>';
                 tableHTML += '<tbody>';
-                sortedLocations.forEach(([location, count]) => {
-                    tableHTML += `<tr><td>${location}</td><td>${count}</td></tr>`;
+                sortedLocations.forEach(([location, data]) => {
+                    const mapId = `map-${location.replace(/\s+/g, '-').toLowerCase()}`;
+                    tableHTML += `<tr><td>${location}</td><td>${data.count}</td><td class="location-map-cell"><div id="${mapId}"></div></td></tr>`;
                 });
                 tableHTML += '</tbody></table>';
                 locationContainer.innerHTML = tableHTML;
+                
+                // Render maps after a brief delay to ensure DOM is ready
+                setTimeout(() => {
+                    sortedLocations.forEach(([location, data]) => {
+                        if (data.polylines.length > 0) {
+                            const mapId = `map-${location.replace(/\s+/g, '-').toLowerCase()}`;
+                            renderTimezoneMap(mapId, data.polylines);
+                        }
+                    });
+
+                    // Attach row click handlers to open interactive modal map
+                    const tbodyRows = document.querySelectorAll('#locationChart tbody tr');
+                    tbodyRows.forEach((row) => {
+                        row.addEventListener('click', () => {
+                            const location = row.children[0] ? row.children[0].textContent : '';
+                            const entry = sortedLocations.find(([loc]) => loc === location);
+                            const polylines = entry ? entry[1].polylines : [];
+                            showModalMap(location, polylines);
+                        });
+                    });
+                }, 100);
+            }
+
+            // Helper to decode Google polyline to coordinates
+            function decodePolyline(str) {
+                const coords = [];
+                let index = 0;
+                let lat = 0;
+                let lng = 0;
+                
+                while (index < str.length) {
+                    let b, shift = 0, result = 0;
+                    do {
+                        b = str.charCodeAt(index++) - 63;
+                        result |= (b & 0x1f) << shift;
+                        shift += 5;
+                    } while (b >= 0x20);
+                    const dLat = ((result & 1) !== 0 ? ~(result >> 1) : (result >> 1));
+                    lat += dLat;
+                    
+                    shift = 0;
+                    result = 0;
+                    do {
+                        b = str.charCodeAt(index++) - 63;
+                        result |= (b & 0x1f) << shift;
+                        shift += 5;
+                    } while (b >= 0x20);
+                    const dLng = ((result & 1) !== 0 ? ~(result >> 1) : (result >> 1));
+                    lng += dLng;
+                    
+                    coords.push([lat * 1e-5, lng * 1e-5]);
+                }
+                
+                return coords;
+            }
+
+            // Helper to render a mini map for a timezone with all its polylines
+            function renderTimezoneMap(containerId, polylines) {
+                if (!polylines || polylines.length === 0) return;
+                
+                try {
+                    // Decode all polylines and collect coordinates
+                    const allCoordinates = [];
+                    polylines.forEach(polylineStr => {
+                        try {
+                            const decoded = decodePolyline(polylineStr);
+                            // decoded returns [lat, lng] pairs
+                            decoded.forEach(coord => {
+                                allCoordinates.push(coord);
+                            });
+                        } catch (e) {
+                            console.warn('Failed to decode polyline:', e);
+                        }
+                    });
+                    
+                    if (allCoordinates.length === 0) return;
+                    
+                    // Create the map
+                    const map = L.map(containerId, {
+                        zoomControl: false,
+                        attributionControl: false,
+                        scrollWheelZoom: false,
+                        dragging: false,
+                        touchZoom: false,
+                        doubleClickZoom: false,
+                        boxZoom: false,
+                        keyboard: false
+                    });
+                    
+                    // Add tile layer
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        minZoom: 3,
+                        maxZoom: 15
+                    }).addTo(map);
+                    
+                    // Draw all routes as polylines
+                    polylines.forEach((polylineStr, idx) => {
+                        try {
+                            const decoded = decodePolyline(polylineStr);
+                            if (decoded && decoded.length > 0) {
+                                // Create polyline with different colors for each route
+                                const colors = ['#fc4c02', '#1e88e5', '#2e7d32', '#8e24aa', '#ff9800'];
+                                const color = colors[idx % colors.length];
+                                
+                                L.polyline(decoded, {
+                                    color: color,
+                                    weight: 2,
+                                    opacity: 0.7
+                                }).addTo(map);
+                            }
+                        } catch (e) {
+                            console.warn('Failed to process polyline:', e);
+                        }
+                    });
+                    
+                    // Fit bounds to show all routes
+                    if (allCoordinates.length > 0) {
+                        const bounds = L.latLngBounds(allCoordinates);
+                        map.fitBounds(bounds, { padding: [5, 5] });
+                    }
+                } catch (error) {
+                    console.error('Error rendering map:', error);
+                }
+            }
+
+            // Open modal with interactive Leaflet map for a location
+            function showModalMap(location, polylines) {
+                const modal = document.getElementById('mapModal');
+                const modalHeader = document.getElementById('modalMapHeader');
+                const modalMap = document.getElementById('modalMap');
+                const closeBtn = document.querySelector('.map-modal-close');
+
+                modalHeader.textContent = `${location} - ${polylines.length} route${polylines.length === 1 ? '' : 's'}`;
+                modal.style.display = 'flex';
+                modal.setAttribute('aria-hidden', 'false');
+
+                // Reset map container
+                modalMap.innerHTML = '';
+                const map = L.map('modalMap');
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(map);
+
+                const allCoords = [];
+                polylines.forEach((polylineStr, idx) => {
+                    const decoded = decodePolyline(polylineStr);
+                    decoded.forEach(c => allCoords.push(c));
+                    const colors = ['#fc4c02', '#1e88e5', '#2e7d32', '#8e24aa', '#ff9800'];
+                    const color = colors[idx % colors.length];
+                    L.polyline(decoded, { color, weight: 3, opacity: 0.85 }).addTo(map);
+                });
+                if (allCoords.length) {
+                    const bounds = L.latLngBounds(allCoords);
+                    map.fitBounds(bounds, { padding: [15, 15] });
+                }
+
+                function closeModal() {
+                    modal.style.display = 'none';
+                    modal.setAttribute('aria-hidden', 'true');
+                    map.remove();
+                    document.removeEventListener('keydown', onEsc);
+                }
+                function onEsc(e) { if (e.key === 'Escape') closeModal(); }
+                closeBtn.onclick = closeModal;
+                modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+                document.addEventListener('keydown', onEsc);
             }
 
             // Helper to render checkbox toggles that control dataset visibility
