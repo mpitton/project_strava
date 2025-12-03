@@ -71,6 +71,44 @@
         .secondary-btn:hover {
             background-color: #f6f6f6;
         }
+        .api-input-group {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .api-input-group label {
+            font-size: 14px;
+            color: #333;
+            font-weight: 500;
+        }
+        .api-input-group input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            width: 120px;
+        }
+        .api-input-group input[type="text"] {
+            width: 300px;
+        }
+        .loading {
+            display: none;
+            color: #666;
+            font-size: 14px;
+            margin-left: 12px;
+        }
+        .error-message {
+            display: none;
+            color: #d32f2f;
+            font-size: 14px;
+            margin-top: 8px;
+            padding: 8px 12px;
+            background-color: #ffebee;
+            border-radius: 6px;
+            border-left: 3px solid #d32f2f;
+        }
         .coming-soon {
             display: none;
             height: 60vh;
@@ -198,7 +236,20 @@
 <body>
     <div class="chart-container">
         <button id="uploadBtn" class="upload-btn">Upload JSON</button>
-        <button id="callApiBtn" class="secondary-btn">Call Strava API</button>
+        <div class="api-input-group">
+            <button id="callApiBtn" class="secondary-btn">Call Strava API</button>
+            <label for="numActivities">Number of activities:</label>
+            <input type="number" id="numActivities" value="10" min="1">
+            <label for="authToken">Auth Token:</label>
+            <input type="text" id="authToken" value="edd80a3502e056835e0d483853bd15f11d0f1495" placeholder="Bearer token">
+            <span id="loading" class="loading">Loading...</span>
+        </div>
+        <div class="api-input-group" style="margin-top: 12px;">
+            <button id="oauthBtn" class="upload-btn" style="margin-bottom: 0;">Connect with Strava (OAuth)</button>
+            <button id="useStoredTokenBtn" class="secondary-btn" style="margin-bottom: 0;">Use Stored Token</button>
+            <span id="oauthLoading" class="loading">Loading...</span>
+        </div>
+        <div id="errorMessage" class="error-message"></div>
         <input type="file" id="jsonFileInput" accept="application/json" style="display:none;">
         <div id="sportControls" class="legend-toggles"></div>
         <canvas id="activitiesChart"></canvas>
@@ -967,19 +1018,395 @@
             reader.readAsText(file);
         });
 
-        // Placeholder navigation for Call Strava API
-        callApiBtn.addEventListener('click', () => {
-            const sections = [
-                'sportControls', 'activitiesChart', 'speedPowerControls',
-                'distanceChart', 'distanceElevationControls',
-                'heartRateChart', 'heartRateControls', 'locationChart'
-            ];
-            sections.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.style.display = 'none';
-            });
-            comingSoonEl.style.display = 'flex';
-            comingSoonEl.setAttribute('aria-hidden', 'false');
+        // Call Strava API functionality
+        callApiBtn.addEventListener('click', async () => {
+            const numActivitiesInput = document.getElementById('numActivities');
+            const authTokenInput = document.getElementById('authToken');
+            const loadingEl = document.getElementById('loading');
+            const errorEl = document.getElementById('errorMessage');
+            
+            // Get values from inputs
+            const numActivities = parseInt(numActivitiesInput.value, 10);
+            const authToken = authTokenInput.value.trim();
+            
+            // Validate inputs
+            if (isNaN(numActivities) || numActivities < 1) {
+                errorEl.textContent = 'Please enter a valid number of activities (minimum 1)';
+                errorEl.style.display = 'block';
+                return;
+            }
+            
+            if (!authToken) {
+                errorEl.textContent = 'Please enter an authorization token';
+                errorEl.style.display = 'block';
+                return;
+            }
+            
+            // Hide error message and show loading
+            errorEl.style.display = 'none';
+            loadingEl.style.display = 'inline';
+            callApiBtn.disabled = true;
+            
+            try {
+                // Calculate pagination: Strava API max is 200 per page
+                const MAX_PER_PAGE = 200;
+                const totalRequested = numActivities;
+                const allActivities = [];
+                
+                // Calculate how many pages we need
+                const totalPages = Math.ceil(totalRequested / MAX_PER_PAGE);
+                
+                // Make multiple API calls if needed
+                for (let page = 1; page <= totalPages; page++) {
+                    // Calculate how many activities to request on this page
+                    const remaining = totalRequested - allActivities.length;
+                    const perPage = Math.min(remaining, MAX_PER_PAGE);
+                    
+                    // Make API call for this page
+                    const url = `https://www.strava.com/api/v3/athlete/activities?per_page=${perPage}&page=${page}`;
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'accept': 'application/json',
+                            'authorization': `Bearer ${authToken}`
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`API request failed on page ${page}: ${response.status} ${response.statusText}. ${errorText}`);
+                    }
+                    
+                    const pageActivities = await response.json();
+                    
+                    if (!Array.isArray(pageActivities)) {
+                        throw new Error(`API response on page ${page} is not an array of activities`);
+                    }
+                    
+                    // If we got fewer activities than requested, we've reached the end
+                    if (pageActivities.length === 0) {
+                        break;
+                    }
+                    
+                    // Add activities from this page to our collection
+                    allActivities.push(...pageActivities);
+                    
+                    // If we've got enough activities or got fewer than requested, we're done
+                    if (allActivities.length >= totalRequested || pageActivities.length < perPage) {
+                        break;
+                    }
+                }
+                
+                // Trim to exactly the requested number (in case we got a few extra)
+                const finalActivities = allActivities.slice(0, totalRequested);
+                
+                if (finalActivities.length === 0) {
+                    throw new Error('No activities found');
+                }
+                
+                // Show charts UI and render the data
+                showChartsUI();
+                renderChart(finalActivities);
+                
+            } catch (err) {
+                console.error('Error calling Strava API:', err);
+                errorEl.textContent = `Error: ${err.message}`;
+                errorEl.style.display = 'block';
+            } finally {
+                loadingEl.style.display = 'none';
+                callApiBtn.disabled = false;
+            }
+        });
+
+        // OAuth functionality
+        const oauthBtn = document.getElementById('oauthBtn');
+        const oauthLoadingEl = document.getElementById('oauthLoading');
+        const errorEl = document.getElementById('errorMessage');
+
+        // Application credentials (do NOT expose these in a public repo)
+        const STRAVA_CLIENT_ID = '179304';
+        const STRAVA_CLIENT_SECRET = '1b74420217e1353bfe6bc138f96d7fb7cc9cb7e5';
+
+        // Check if we're returning from OAuth callback
+        function handleOAuthCallback() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+            
+            if (error) {
+                errorEl.textContent = `OAuth error: ${error}`;
+                errorEl.style.display = 'block';
+                // Clean up URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+                return;
+            }
+            
+            if (code) {
+                // Exchange code for access token
+                exchangeCodeForToken(code);
+                // Clean up URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        }
+
+        // Exchange authorization code for access token
+        async function exchangeCodeForToken(code) {
+            oauthLoadingEl.style.display = 'inline';
+            oauthBtn.disabled = true;
+            errorEl.style.display = 'none';
+            
+            try {
+                // Exchange code for access token
+                const tokenResponse = await fetch('https://www.strava.com/api/v3/oauth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        client_id: STRAVA_CLIENT_ID,
+                        client_secret: STRAVA_CLIENT_SECRET,
+                        code: code,
+                        grant_type: 'authorization_code'
+                    })
+                });
+                
+                if (!tokenResponse.ok) {
+                    const errorText = await tokenResponse.text();
+                    throw new Error(`Token exchange failed: ${tokenResponse.status} ${tokenResponse.statusText}. ${errorText}`);
+                }
+                
+                const tokenData = await tokenResponse.json();
+                
+                if (!tokenData.access_token) {
+                    throw new Error('No access token received from Strava');
+                }
+                
+                // Store tokens and client credentials in localStorage
+                localStorage.setItem('strava_access_token', tokenData.access_token);
+                if (tokenData.refresh_token) {
+                    localStorage.setItem('strava_refresh_token', tokenData.refresh_token);
+                }
+                if (tokenData.expires_at) {
+                    localStorage.setItem('strava_token_expires_at', tokenData.expires_at.toString());
+                }
+                
+                // Use the access token to fetch activities
+                const numActivities = parseInt(document.getElementById('numActivities').value, 10) || 200;
+                await fetchActivitiesWithToken(tokenData.access_token, numActivities);
+                
+            } catch (err) {
+                console.error('Error exchanging OAuth code:', err);
+                errorEl.textContent = `Error: ${err.message}`;
+                errorEl.style.display = 'block';
+            } finally {
+                oauthLoadingEl.style.display = 'none';
+                oauthBtn.disabled = false;
+            }
+        }
+
+        // Fetch activities using access token (with pagination support)
+        async function fetchActivitiesWithToken(accessToken, numActivities = 200) {
+            const loadingEl = document.getElementById('loading');
+            loadingEl.style.display = 'inline';
+            errorEl.style.display = 'none';
+            
+            try {
+                const MAX_PER_PAGE = 200;
+                const totalRequested = numActivities;
+                const allActivities = [];
+                
+                const totalPages = Math.ceil(totalRequested / MAX_PER_PAGE);
+                
+                for (let page = 1; page <= totalPages; page++) {
+                    const remaining = totalRequested - allActivities.length;
+                    const perPage = Math.min(remaining, MAX_PER_PAGE);
+                    
+                    const url = `https://www.strava.com/api/v3/athlete/activities?per_page=${perPage}&page=${page}`;
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'accept': 'application/json',
+                            'authorization': `Bearer ${accessToken}`
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        // If token expired, try to refresh
+                        if (response.status === 401) {
+                            const refreshedToken = await refreshAccessToken();
+                            if (refreshedToken) {
+                                // Retry with new token
+                                const retryResponse = await fetch(url, {
+                                    method: 'GET',
+                                    headers: {
+                                        'accept': 'application/json',
+                                        'authorization': `Bearer ${refreshedToken}`
+                                    }
+                                });
+                                if (!retryResponse.ok) {
+                                    const errorText = await retryResponse.text();
+                                    throw new Error(`API request failed on page ${page}: ${retryResponse.status} ${retryResponse.statusText}. ${errorText}`);
+                                }
+                                const pageActivities = await retryResponse.json();
+                                if (!Array.isArray(pageActivities)) {
+                                    throw new Error(`API response on page ${page} is not an array of activities`);
+                                }
+                                if (pageActivities.length === 0) break;
+                                allActivities.push(...pageActivities);
+                                if (allActivities.length >= totalRequested || pageActivities.length < perPage) break;
+                                continue;
+                            }
+                        }
+                        const errorText = await response.text();
+                        throw new Error(`API request failed on page ${page}: ${response.status} ${response.statusText}. ${errorText}`);
+                    }
+                    
+                    const pageActivities = await response.json();
+                    
+                    if (!Array.isArray(pageActivities)) {
+                        throw new Error(`API response on page ${page} is not an array of activities`);
+                    }
+                    
+                    if (pageActivities.length === 0) {
+                        break;
+                    }
+                    
+                    allActivities.push(...pageActivities);
+                    
+                    if (allActivities.length >= totalRequested || pageActivities.length < perPage) {
+                        break;
+                    }
+                }
+                
+                const finalActivities = allActivities.slice(0, totalRequested);
+                
+                if (finalActivities.length === 0) {
+                    throw new Error('No activities found');
+                }
+                
+                showChartsUI();
+                renderChart(finalActivities);
+                
+            } catch (err) {
+                console.error('Error fetching activities:', err);
+                errorEl.textContent = `Error: ${err.message}`;
+                errorEl.style.display = 'block';
+            } finally {
+                loadingEl.style.display = 'none';
+            }
+        }
+
+        // Refresh expired access token
+        async function refreshAccessToken() {
+            const refreshToken = localStorage.getItem('strava_refresh_token');
+            
+            if (!refreshToken) {
+                return null;
+            }
+            
+            try {
+                const response = await fetch('https://www.strava.com/api/v3/oauth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        client_id: STRAVA_CLIENT_ID,
+                        client_secret: STRAVA_CLIENT_SECRET,
+                        grant_type: 'refresh_token',
+                        refresh_token: refreshToken
+                    })
+                });
+                
+                if (!response.ok) {
+                    return null;
+                }
+                
+                const tokenData = await response.json();
+                
+                if (tokenData.access_token) {
+                    localStorage.setItem('strava_access_token', tokenData.access_token);
+                    if (tokenData.refresh_token) {
+                        localStorage.setItem('strava_refresh_token', tokenData.refresh_token);
+                    }
+                    if (tokenData.expires_at) {
+                        localStorage.setItem('strava_token_expires_at', tokenData.expires_at.toString());
+                    }
+                    return tokenData.access_token;
+                }
+                
+                return null;
+            } catch (err) {
+                console.error('Error refreshing token:', err);
+                return null;
+            }
+        }
+
+        // OAuth button click handler
+        oauthBtn.addEventListener('click', () => {
+            // Build redirect URI (current page)
+            const redirectUri = window.location.origin + window.location.pathname;
+            
+            // Redirect to Strava authorization page
+            const authUrl = new URL('https://www.strava.com/oauth/authorize');
+            authUrl.searchParams.set('client_id', STRAVA_CLIENT_ID);
+            authUrl.searchParams.set('redirect_uri', redirectUri);
+            authUrl.searchParams.set('response_type', 'code');
+            authUrl.searchParams.set('approval_prompt', 'auto');
+            authUrl.searchParams.set('scope', 'activity:read_all');
+            
+            window.location.href = authUrl.toString();
+        });
+
+        // Use stored token button
+        const useStoredTokenBtn = document.getElementById('useStoredTokenBtn');
+        useStoredTokenBtn.addEventListener('click', async () => {
+            const storedToken = localStorage.getItem('strava_access_token');
+            const expiresAt = localStorage.getItem('strava_token_expires_at');
+            
+            if (!storedToken) {
+                errorEl.textContent = 'No stored token found. Please connect with Strava first.';
+                errorEl.style.display = 'block';
+                return;
+            }
+            
+            // Check if token is expired (with 5 minute buffer)
+            const now = Math.floor(Date.now() / 1000);
+            const expiresAtNum = parseInt(expiresAt, 10);
+            if (expiresAtNum && now >= expiresAtNum - 300) {
+                // Token expired or expiring soon, try to refresh
+                oauthLoadingEl.style.display = 'inline';
+                useStoredTokenBtn.disabled = true;
+                try {
+                    const refreshedToken = await refreshAccessToken();
+                    if (refreshedToken) {
+                        await fetchActivitiesWithToken(refreshedToken, parseInt(document.getElementById('numActivities').value, 10) || 200);
+                    } else {
+                        errorEl.textContent = 'Token expired and could not be refreshed. Please reconnect with Strava.';
+                        errorEl.style.display = 'block';
+                    }
+                } finally {
+                    oauthLoadingEl.style.display = 'none';
+                    useStoredTokenBtn.disabled = false;
+                }
+            } else {
+                // Token is still valid
+                await fetchActivitiesWithToken(storedToken, parseInt(document.getElementById('numActivities').value, 10) || 200);
+            }
+        });
+
+        // Check for OAuth callback on page load
+        handleOAuthCallback();
+
+        // Load stored token state on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            // Show/hide "Use Stored Token" button based on whether token exists
+            const storedToken = localStorage.getItem('strava_access_token');
+            if (storedToken) {
+                useStoredTokenBtn.style.display = 'inline-block';
+            } else {
+                useStoredTokenBtn.style.display = 'none';
+            }
         });
 
         function showChartsUI() {
